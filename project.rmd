@@ -1,0 +1,243 @@
+---
+title: "Project"
+author: "Thayumanav Jayadevan"
+date: "December 3, 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Import libraries
+```{r}
+library(quantmod)
+library(PerformanceAnalytics)
+library(fPortfolio)
+library(quadprog)
+library(tseries)
+```
+
+### Get data from Yahoo Finance
+```{r}
+data.INTC = getSymbols("INTC", from = "2011-11-30", to = "2018-11-30", auto.assign = F)
+data.MCD = getSymbols("MCD", from = "2011-11-30", to = "2018-11-30", auto.assign = F)
+data.TM = getSymbols("TM", from = "2011-11-30", to = "2018-11-30", auto.assign = F)
+data.NKE = getSymbols("NKE", from = "2011-11-30", to = "2018-11-30", auto.assign = F)
+data.WMT = getSymbols("WMT", from = "2011-11-30", to = "2018-11-30", auto.assign = F)
+
+data.GSPC = getSymbols("^GSPC", from = "2011-11-30", to = "2018-11-30", auto.assign = F)
+```
+
+# Returns
+
+### Calculate returns of stocks
+```{r}
+options(scipen = 4)
+
+data.INTC$INTC.ret = Return.calculate(data.INTC$INTC.Adjusted)
+data.MCD$MCD.ret = Return.calculate(data.MCD$MCD.Adjusted)
+data.TM$TM.ret = Return.calculate(data.TM$TM.Adjusted)
+data.NKE$NKE.ret = Return.calculate(data.NKE$NKE.Adjusted)
+data.WMT$WMT.ret = Return.calculate(data.WMT$WMT.Adjusted)
+
+data.GSPC$GSPC.ret = Return.calculate(data.GSPC$GSPC.Adjusted)
+```
+
+### Construct portfolio
+```{r}
+multi = cbind(data.INTC$INTC.ret, data.MCD$MCD.ret, data.TM$TM.ret, data.NKE$NKE.ret, 
+              data.WMT$WMT.ret, data.GSPC$GSPC.ret)
+multi = multi[-1, ]
+```
+
+### Portfolio return equal weighted, rebalanced on quarters
+```{r}
+port.ret = Return.portfolio(multi, rebalance_on = "quarters")
+```
+
+```{r}
+Return.cumulative(port.ret)
+```
+
+# Risk
+### Create a matrix and transposed matrix of equal weights for 6 stocks
+```{r}
+weights = rep(1/6, 6)
+mat.weight = matrix(weights, 1)
+tmat.weight = t(mat.weight)
+```
+
+### Convert portfolio returns to matrix form
+```{r}
+mat.return = matrix(multi, nrow = nrow(multi))
+```
+
+### Create Covariance matrix
+```{r}
+VCOV = cov(mat.return) * 252
+```
+
+### Calculate portfolio risk
+```{r}
+port.var = mat.weight %*% VCOV %*% tmat.weight
+port.sd = sqrt(port.var)
+```
+
+## Value at risk
+## Gaussian VaR
+### Calculate mean return and risk
+```{r}
+port.mean = mean(port.ret)
+port.risk = sd(port.ret)
+```
+
+### Calculate current portfolio value
+Assume we had invested is $50,000
+```{r}
+ret.cum = Return.cumulative(port.ret)
+current_val = 50000 * (1 + ret.cum)
+```
+
+### Gaussian VaR at 1% and 5%
+```{r}
+VaR01.Gaussian = -(port.mean+port.risk*qnorm(0.01))*current_val
+VaR01.Gaussian
+VaR05.Gaussian = -(port.mean+port.risk*qnorm(0.05))*current_val
+VaR05.Gaussian
+```
+
+## Historical VaR
+```{r}
+ret.cum = data.frame(lapply(multi, FUN = Return.cumulative))
+```
+
+```{r}
+ret.val = (1 + ret.cum) * (50000 / 6)
+```
+
+```{r}
+sim.portPnL = ret.val$INTC.ret * multi$INTC.ret + ret.val$MCD.ret * multi$MCD.ret + 
+              ret.val$TM.ret * multi$TM.ret + ret.val$NKE.ret * multi$NKE.ret + 
+              ret.val$WMT.ret * multi$WMT.ret + ret.val$GSPC.ret * multi$GSPC.ret
+names(sim.portPnL) <- "Port.PnL"
+```
+
+### Historical VaR at 1% and 5%
+```{r}
+VaR01.Historical = quantile(-sim.portPnL$Port.PnL,0.99)
+VaR01.Historical
+VaR05.Historical = quantile(-sim.portPnL$Port.PnL,0.95)
+VaR05.Historical
+```
+
+### Plot VaR in relation to P&L density
+```{r}
+ret.d = density(sim.portPnL)
+```
+
+```{r}
+plot(ret.d, xlab = "Profit & Loss", ylab = "", yaxt = "n", 
+main = "Density of Simulated Portfolio P&L Over Three Years 
+     And 1% and 5% 1-Day Historical Value-at-Risk (VaR)")
+abline(v = -quantile(-sim.portPnL, 0.99), col = "gray", lty = 1)
+abline(v = -quantile(-sim.portPnL, 0.95),col = "black",lty = 2)
+x = seq(min(sim.portPnL), max(sim.portPnL), length = 1000)
+y = dnorm(x, mean = mean(sim.portPnL), sd = sd(sim.portPnL))
+lines(x, y, type = "l", col = "black", lwd = 1, lty = 3)
+legend("topright", c("Simulated P&L Distribution", "Normal Distribution", "1% 1-Day VaR","5% 1-Day VaR"), 
+       col = c("black","black","gray","black"), lty = c(1,3,1,2))
+```
+
+# Expected Shortfall
+### Gaussian ES at 1% and 5%
+```{r}
+ES01.Gaussian = current_val * (port.mean + port.risk * (dnorm(qnorm(.01)) / .01))
+ES01.Gaussian
+ES05.Gaussian = current_val * (port.mean + port.risk * (dnorm(qnorm(.05)) / .05))
+ES05.Gaussian
+```
+
+### Historical ES at 1% and 5%
+```{r}
+ES.PnL = sim.portPnL$Port.PnL
+ES.PnL$dummy01 = ifelse(ES.PnL$Port.PnL < (-VaR01.Historical) , 1, 0)
+ES.PnL$dummy05 = ifelse(ES.PnL$Port.PnL < (-VaR05.Historical) ,1 , 0)
+```
+
+```{r}
+shortfall01 = subset(ES.PnL, ES.PnL$dummy01==1)
+shortfall05 = subset(ES.PnL, ES.PnL$dummy05==1)
+ES01.Historical =  -mean(shortfall01$Port.PnL)
+ES01.Historical
+ES05.Historical =  -mean(shortfall05$Port.PnL)
+ES05.Historical
+```
+
+# Risk-Adjusted Portfolio Performance Measures
+```{r}
+Rf = .0007
+# minimum acceptable return
+mar = 0.015
+```
+
+```{r}
+annual.port.ret = mean(port.ret$portfolio.returns) * 252
+annual.port.sd = sd(port.ret$portfolio.returns)*sqrt(252)
+```
+
+### Sharpe ratio
+```{r}
+Sharpe.port = (annual.port.ret - Rf) / annual.port.sd
+Sharpe.port
+```
+
+### Roy's safety first ratio
+```{r}
+Roy.SF.port = (annual.port.ret - mar) / annual.port.sd
+Roy.SF.port
+```
+
+### Treynor ratio
+```{r}
+port.reg = lm(port.ret$portfolio.returns ~ multi$GSPC.ret, data = port.ret)
+port.beta = port.reg$coefficients[2]
+```
+
+```{r}
+Treynor.port = (annual.port.ret - Rf ) / port.beta
+names(Treynor.port) = "Treynor ratio"
+Treynor.port
+```
+
+### Sortino ratio
+```{r}
+period.mar = mar / 252
+downside.port = port.ret
+downside.port$dummy = ifelse(port.ret$portfolio.returns < period.mar, 1, 0)
+```
+
+```{r}
+downside.port = subset(downside.port, downside.port$dummy == 1)
+dd.port = sd(downside.port$portfolio.returns) * sqrt(252)
+```
+
+```{r}
+Sortino.port = (annual.port.ret - mar) / dd.port
+Sortino.port
+```
+
+### Information ratio
+```{r}
+Act.Ret.port = port.ret$portfolio.returns - multi$GSPC.ret
+alpha.port = mean(Act.Ret.port) * 252
+```
+
+```{r}
+tracking.error.port = sd(Act.Ret.port) * sqrt(252)
+```
+
+```{r}
+IR.port = alpha.port / tracking.error.port
+IR.port
+```
